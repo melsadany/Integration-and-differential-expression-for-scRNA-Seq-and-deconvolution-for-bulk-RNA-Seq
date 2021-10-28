@@ -1,0 +1,1292 @@
+---
+title: "Rotation1 scRNA"
+output: html_notebook
+---
+
+#loading libraries
+```{r}
+pacman::p_load(dplyr, Seurat, UpSetR, RColorBrewer, gplots, pheatmap, MuSiC, reshape2, xnet, granulator, Biobase) 
+```
+
+#loading files 
+```{r}
+prefix = "/wdata/ebahl/mlab/thesis/cell_activity/neuronal-activity-score/data/SNUCLEI_10X_SOR/STANDARD"
+counts = readRDS(file = file.path(prefix, "counts.rds"))
+samples = read.csv(file = file.path(prefix, "samples.csv"), row.names = 1, stringsAsFactors=FALSE)
+qc = read.csv(file = file.path(prefix, "samples_qc.csv"), row.names = 1, stringsAsFactors=FALSE)
+genes = read.csv(file = file.path(prefix, "genes.csv"), row.names = 1, stringsAsFactors=FALSE)
+samples = cbind(samples, qc); rm(qc)
+label_predictions = readRDS(file = file.path(prefix, "allen_label_transfer.rds"))
+```
+
+#creating Seurat object
+```{r}
+seu = CreateSeuratObject(counts, min.cells = 1, min.features = 0)
+seu@meta.data = cbind(seu@meta.data, samples); rm(samples)
+
+```
+
+```{r}
+# split the dataset into a list of two seurat objects (HC and SOR)
+seu.list <- SplitObject(seu, split.by = "group")
+
+# normalize and identify variable features for each dataset independently
+seu.list <- lapply(X = seu.list, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+})
+
+# select features that are repeatedly variable across datasets for integration
+features <- SelectIntegrationFeatures(object.list = seu.list)
+
+seu.anchors <- FindIntegrationAnchors(object.list = seu.list, anchor.features = features)
+
+# this command creates an 'integrated' data assay
+seu.combined <- IntegrateData(anchorset = seu.anchors)
+
+
+# specify that we will perform downstream analysis on the corrected data note that the
+# original unmodified data still resides in the 'RNA' assay
+DefaultAssay(seu.combined) <- "integrated"
+
+# Run the standard workflow for visualization and clustering
+seu.combined <- ScaleData(seu.combined, verbose = FALSE)
+seu.combined <- RunPCA(seu.combined, npcs = 30, verbose = FALSE)
+seu.combined <- RunUMAP(seu.combined, reduction = "pca", dims = 1:30)
+seu.combined <- FindNeighbors(seu.combined, reduction = "pca", dims = 1:30)
+seu.combined <- FindClusters(seu.combined, resolution = 0.5)
+
+
+# Visualization
+p1 <- DimPlot(seu.combined, reduction = "umap", group.by = "group")
+p2 <- DimPlot(seu.combined, reduction = "umap", label = TRUE, repel = TRUE)
+
+#tiff(filename="integrated_analysis_visualization_1.tiff", width=3000, height=2000, res=300)
+p1 + p2
+#dev.off()
+
+#tiff(filename="integrated_analysis_visualization_2.tiff", width=3000, height=2000, res=300)
+DimPlot(seu.combined, reduction = "umap", split.by = "group")
+#dev.off()
+
+
+
+```
+
+#Identify conserved cell type markers
+```{r}
+# For performing differential expression after integration, we switch back to the original
+# data
+DefaultAssay(seu.combined) <- "RNA"
+nk.markers <- FindConservedMarkers(seu.combined, ident.1 = 6, grouping.var = "group", verbose = FALSE)
+head(nk.markers)
+```
+#plotting features wanted 
+```{r}
+#tiff(filename="integrated_analysis_featureplot.tiff", width=3000, height=2000, res=300)
+FeaturePlot(seu.combined, features = c("4921539H07Rik", "1700007F19Rik", "Gm2164", "Gm2115", "Stac", "Gm47448", "Cntnap5c", "Gm10754", "Cpne8"), min.cutoff = "q9")
+#dev.off()
+
+```
+#adding label prediction to the dimplot
+```{r}
+seu.combined@meta.data$subclass_predicted_id = label_predictions$subclass_label[match(colnames(seu.combined), rownames(label_predictions$subclass_label)),  "predicted.id"]
+
+head(seu.combined@meta.data)
+seu.combined = SetIdent(seu.combined, value="subclass_predicted_id")
+
+tiff(filename="integrated_analysis_referencedcells.tiff", width=3000, height=2000, res=300)
+DimPlot(seu.combined, reduction = "umap", label = TRUE, repel = TRUE, )
+dev.off()
+
+
+```
+
+
+
+#DE for CA1
+```{r}
+seu.combined$celltype.group <- paste(Idents(seu.combined), seu.combined$group, sep = "_")
+seu.combined$celltype <- Idents(seu.combined)
+Idents(seu.combined) <- "celltype.group"
+
+
+CA1.response.wilcox <- FindMarkers(seu.combined, ident.1 = "CA1-ProS_SOR", ident.2 = "CA1-ProS_HC", verbose = FALSE, test.use = "wilcox", logfc.threshold = 0)
+head(CA1.response.wilcox, n = 15)
+
+
+CA1.response.bimod <- FindMarkers(seu.combined, ident.1 = "CA1-ProS_SOR", ident.2 = "CA1-ProS_HC", verbose = FALSE, test.use = "bimod", logfc.threshold = 0)
+
+CA1.response.roc <- FindMarkers(seu.combined, ident.1 = "CA1-ProS_SOR", ident.2 = "CA1-ProS_HC", verbose = FALSE, test.use = "roc", logfc.threshold = 0)
+
+CA1.response.t <- FindMarkers(seu.combined, ident.1 = "CA1-ProS_SOR", ident.2 = "CA1-ProS_HC", verbose = FALSE, test.use = "t", logfc.threshold = 0)
+
+CA1.response.negbinom <- FindMarkers(seu.combined, ident.1 = "CA1-ProS_SOR", ident.2 = "CA1-ProS_HC", verbose = FALSE, test.use = "negbinom", logfc.threshold = 0)
+
+CA1.response.poisson <- FindMarkers(seu.combined, ident.1 = "CA1-ProS_SOR", ident.2 = "CA1-ProS_HC", verbose = FALSE, test.use = "poisson", logfc.threshold = 0)
+
+CA1.response.LR <- FindMarkers(seu.combined, ident.1 = "CA1-ProS_SOR", ident.2 = "CA1-ProS_HC", verbose = FALSE, test.use = "LR", logfc.threshold = 0)
+
+
+
+
+```
+
+
+
+#DE for DG
+```{r}
+
+DG.response.wilcox <- FindMarkers(seu.combined, ident.1 = "DG_SOR", ident.2 = "DG_HC", verbose = FALSE, test.use = "wilcox", logfc.threshold = 0)
+
+DG.response.bimod <- FindMarkers(seu.combined, ident.1 = "DG_SOR", ident.2 = "DG_HC", verbose = FALSE, test.use = "bimod", logfc.threshold = 0)
+
+DG.response.roc <- FindMarkers(seu.combined, ident.1 = "DG_SOR", ident.2 = "DG_HC", verbose = FALSE, test.use = "roc", logfc.threshold = 0)
+
+DG.response.t <- FindMarkers(seu.combined, ident.1 = "DG_SOR", ident.2 = "DG_HC", verbose = FALSE, test.use = "t", logfc.threshold = 0)
+
+DG.response.negbinom <- FindMarkers(seu.combined, ident.1 = "DG_SOR", ident.2 = "DG_HC", verbose = FALSE, test.use = "negbinom", logfc.threshold = 0)
+
+DG.response.poisson <- FindMarkers(seu.combined, ident.1 = "DG_SOR", ident.2 = "DG_HC", verbose = FALSE, test.use = "poisson", logfc.threshold = 0)
+
+DG.response.LR <- FindMarkers(seu.combined, ident.1 = "DG_SOR", ident.2 = "DG_HC", verbose = FALSE, test.use = "LR", logfc.threshold = 0)
+
+
+```
+
+#DE for Micro-PVM
+```{r}
+
+Micro.response.wilcox <- FindMarkers(seu.combined, ident.1 = "Micro-PVM_SOR", ident.2 = "Micro-PVM_HC", verbose = FALSE, test.use = "wilcox", logfc.threshold = 0)
+
+Micro.response.bimod <- FindMarkers(seu.combined, ident.1 = "Micro-PVM_SOR", ident.2 = "Micro-PVM_HC", verbose = FALSE, test.use = "bimod", logfc.threshold = 0)
+
+Micro.response.roc <- FindMarkers(seu.combined, ident.1 = "Micro-PVM_SOR", ident.2 = "Micro-PVM_HC", verbose = FALSE, test.use = "roc", logfc.threshold = 0)
+
+Micro.response.t <- FindMarkers(seu.combined, ident.1 = "Micro-PVM_SOR", ident.2 = "Micro-PVM_HC", verbose = FALSE, test.use = "t", logfc.threshold = 0)
+
+Micro.response.negbinom <- FindMarkers(seu.combined, ident.1 = "Micro-PVM_SOR", ident.2 = "Micro-PVM_HC", verbose = FALSE, test.use = "negbinom", logfc.threshold = 0)
+
+Micro.response.poisson <- FindMarkers(seu.combined, ident.1 = "Micro-PVM_SOR", ident.2 = "Micro-PVM_HC", verbose = FALSE, test.use = "poisson", logfc.threshold = 0)
+
+Micro.response.LR <- FindMarkers(seu.combined, ident.1 = "Micro-PVM_SOR", ident.2 = "Micro-PVM_HC", verbose = FALSE, test.use = "LR", logfc.threshold = 0)
+
+
+```
+
+
+
+#filtering results based on p_val_adj
+```{r}
+CA1.response.bimod.DEGs <- CA1.response.bimod[CA1.response.bimod$p_val_adj<0.05,]
+CA1.response.LR.DEGs <- CA1.response.LR[CA1.response.LR$p_val_adj<0.05,]
+CA1.response.negbinom.DEGs <- CA1.response.negbinom[CA1.response.negbinom$p_val_adj<0.05,]
+CA1.response.poisson.DEGs <- CA1.response.poisson[CA1.response.poisson$p_val_adj<0.05,]
+CA1.response.t.DEGs <- CA1.response.t[CA1.response.t$p_val_adj<0.05,]
+CA1.response.wilcox.DEGs <- CA1.response.wilcox[CA1.response.wilcox$p_val_adj<0.05,]
+
+
+
+DG.response.bimod.DEGs <- DG.response.bimod[DG.response.bimod$p_val_adj<0.05,]
+DG.response.LR.DEGs <- DG.response.LR[DG.response.LR$p_val_adj<0.05,]
+DG.response.negbinom.DEGs <- DG.response.negbinom[DG.response.negbinom$p_val_adj<0.05,]
+DG.response.poisson.DEGs <- DG.response.poisson[DG.response.poisson$p_val_adj<0.05,]
+DG.response.t.DEGs <- DG.response.t[DG.response.t$p_val_adj<0.05,]
+DG.response.wilcox.DEGs <- DG.response.wilcox[DG.response.wilcox$p_val_adj<0.05,]
+
+
+
+Micro.response.bimod.DEGs <- Micro.response.bimod[Micro.response.bimod$p_val_adj<0.05,]
+Micro.response.LR.DEGs <- Micro.response.LR[Micro.response.LR$p_val_adj<0.05,]
+Micro.response.negbinom.DEGs <- Micro.response.negbinom[Micro.response.negbinom$p_val_adj<0.05,]
+Micro.response.poisson.DEGs <- Micro.response.poisson[Micro.response.poisson$p_val_adj<0.05,]
+Micro.response.t.DEGs <- Micro.response.t[Micro.response.t$p_val_adj<0.05,]
+Micro.response.wilcox.DEGs <- Micro.response.wilcox[Micro.response.wilcox$p_val_adj<0.05,]
+
+
+
+```
+
+
+#Printing common DEGs between different tests in same cell type
+```{r}
+CA1.list.input <- list(CA1.bimod = row.names(CA1.response.bimod.DEGs), CA1.LR = row.names(CA1.response.LR.DEGs), CA1.negbinom = row.names(CA1.response.negbinom.DEGs), CA1.poisson = row.names(CA1.response.poisson.DEGs), CA1.t = row.names(CA1.response.t.DEGs), CA1.wilcox = row.names(CA1.response.wilcox.DEGs))
+
+#tiff(filename="CA1_DEGs.tiff", width=3000, height=2000, res=300)
+upset(fromList(CA1.list.input), order.by = "freq", nsets = 6)
+#dev.off()
+
+
+
+DG.list.input <- list(DG.bimod = row.names(DG.response.bimod.DEGs), DG.LR = row.names(DG.response.LR.DEGs), DG.negbinom = row.names(DG.response.negbinom.DEGs), DG.poisson = row.names(DG.response.poisson.DEGs), DG.t = row.names(DG.response.t.DEGs), DG.wilcox = row.names(DG.response.wilcox.DEGs))
+
+
+#tiff(filename="DG_DEGs.tiff", width=3000, height=2000, res=300)
+upset(fromList(DG.list.input), order.by = "freq", nsets = 6)
+#dev.off()
+
+
+
+Micro.list.input <- list(Micro.bimod = row.names(Micro.response.bimod.DEGs), Micro.LR = row.names(Micro.response.LR.DEGs), Micro.negbinom = row.names(Micro.response.negbinom.DEGs), Micro.poisson = row.names(Micro.response.poisson.DEGs), Micro.t = row.names(Micro.response.t.DEGs), Micro.wilcox = row.names(Micro.response.wilcox.DEGs))
+
+
+tiff(filename="Micro_DEGs.tiff", width=3000, height=2000, res=300)
+upset(fromList(Micro.list.input), order.by = "freq", nsets = 6)
+dev.off()
+
+
+
+
+```
+
+
+#saving DEGs files
+```{r}
+#CA1 DEGs
+write.csv(CA1.response.bimod.DEGs, file = "CA1_bimod_DEGs.csv")
+write.csv(CA1.response.LR.DEGs, file = "CA1_LR_DEGs.csv")
+write.csv(CA1.response.negbinom.DEGs, file = "CA1_negbinom_DEGs.csv")
+write.csv(CA1.response.poisson.DEGs, file = "CA1_poisson_DEGs.csv")
+write.csv(CA1.response.t.DEGs, file = "CA1_t_DEGs.csv")
+write.csv(CA1.response.wilcox.DEGs, file = "CA1_wilcox_DEGs.csv")
+
+
+
+
+#DG DEGs
+write.csv(DG.response.bimod.DEGs, file = "DG_bimod_DEGs.csv")
+write.csv(DG.response.LR.DEGs, file = "DG_LR_DEGs.csv")
+write.csv(DG.response.negbinom.DEGs, file = "DG_negbinom_DEGs.csv")
+write.csv(DG.response.poisson.DEGs, file = "DG_poisson_DEGs.csv")
+write.csv(DG.response.t.DEGs, file = "DG_t_DEGs.csv")
+write.csv(DG.response.wilcox.DEGs, file = "DG_wilcox_DEGs.csv")
+
+
+
+
+#Micro DEGs
+write.csv(Micro.response.bimod.DEGs, file = "Micro_bimod_DEGs.csv")
+write.csv(Micro.response.LR.DEGs, file = "Micro_LR_DEGs.csv")
+write.csv(Micro.response.negbinom.DEGs, file = "Micro_negbinom_DEGs.csv")
+write.csv(Micro.response.poisson.DEGs, file = "Micro_poisson_DEGs.csv")
+write.csv(Micro.response.t.DEGs, file = "Micro_t_DEGs.csv")
+write.csv(Micro.response.wilcox.DEGs, file = "Micro_wilcox_DEGs.csv")
+
+
+
+
+```
+
+
+#ignore this
+```{r}
+################################ignore this chunk
+CA1.response.bimod.DEGs.filt <- select(CA1.response.bimod.DEGs, c('avg_log2FC', 'p_val_adj'))
+
+CA1.response.bimod.DEGs$CA1_bimod_padj <- 0
+
+
+for (i in row.names(CA1.response.bimod.DEGs.filt)){
+  if (CA1.response.bimod.DEGs.filt[i,1]>0){
+    CA1.response.bimod.DEGs.filt[i,3] = CA1.response.bimod.DEGs.filt[i,2]*1
+  }
+  else{
+    CA1.response.bimod.DEGs.filt[i,3] = CA1.response.bimod.DEGs.filt[i,2]*-1
+  }
+}
+
+
+
+```
+
+
+#adding padj edited column by lfc sign
+```{r}
+#I added a column to this dataframe to have the multiplication of the log10(adj-p value) by the sign of the logFC
+CA1.response.bimod.DEGs$CA1_bimod_padj <- 0
+
+for (i in row.names(CA1.response.bimod.DEGs)){
+  if (CA1.response.bimod.DEGs[i,2]>0){
+    CA1.response.bimod.DEGs[i,6] = log10(CA1.response.bimod.DEGs[i,5])*-1
+  }
+  else{
+    CA1.response.bimod.DEGs[i,6] = log10(CA1.response.bimod.DEGs[i,5])*1
+  }
+}
+
+CA1.response.LR.DEGs$CA1_LR_padj <- 0
+for (i in rownames(CA1.response.LR.DEGs)){
+  if (CA1.response.LR.DEGs[i,2]>0){
+    CA1.response.LR.DEGs[i,6] <- log10(CA1.response.LR.DEGs[i,5])*-1
+  }
+  else{
+    CA1.response.LR.DEGs[i,6] <- log10(CA1.response.LR.DEGs[i,5])*1
+  }
+}
+
+CA1.response.negbinom.DEGs$CA1_negbinom_padj <- 0
+for (i in rownames(CA1.response.negbinom.DEGs)){
+  if (CA1.response.negbinom.DEGs[i,2]>0){
+    CA1.response.negbinom.DEGs[i,6] <- log10(CA1.response.negbinom.DEGs[i,5])*-1
+  }
+  else{
+    CA1.response.negbinom.DEGs[i,6] <- log10(CA1.response.negbinom.DEGs[i,5])*1
+  }
+}
+
+CA1.response.poisson.DEGs$CA1_poisson_padj <- 0
+for (i in rownames(CA1.response.poisson.DEGs)){
+  if (CA1.response.poisson.DEGs[i,2]>0){
+    CA1.response.poisson.DEGs[i,6] <- log10(CA1.response.poisson.DEGs[i,5])*-1
+  }
+  else{
+    CA1.response.poisson.DEGs[i,6] <- log10(CA1.response.poisson.DEGs[i,5])*1
+  }
+}
+
+
+CA1.response.t.DEGs$CA1_t_padj <- 0
+for (i in rownames(CA1.response.t.DEGs)){
+  if (CA1.response.t.DEGs[i,2]>0){
+    CA1.response.t.DEGs[i,6] <- log10(CA1.response.t.DEGs[i,5])*-1
+  }
+  else{
+    CA1.response.t.DEGs[i,6] <- log10(CA1.response.t.DEGs[i,5])*1
+  }
+}
+
+
+CA1.response.wilcox.DEGs$CA1_wilcox_padj <- 0
+for (i in rownames(CA1.response.wilcox.DEGs)){
+  if (CA1.response.wilcox.DEGs[i,2]>0){
+    CA1.response.wilcox.DEGs[i,6] <- log10(CA1.response.wilcox.DEGs[i,5])*-1
+  }
+  else{
+    CA1.response.wilcox.DEGs[i,6] <- log10(CA1.response.wilcox.DEGs[i,5])*1
+  }
+}
+
+
+
+
+############################adding same column to DG DEGs
+
+
+DG.response.bimod.DEGs$DG_bimod_padj <- 0
+
+for (i in row.names(DG.response.bimod.DEGs)){
+  if (DG.response.bimod.DEGs[i,2]>0){
+    DG.response.bimod.DEGs[i,6] = log10(DG.response.bimod.DEGs[i,5])*-1
+  }
+  else{
+    DG.response.bimod.DEGs[i,6] = log10(DG.response.bimod.DEGs[i,5])*1
+  }
+}
+
+DG.response.LR.DEGs$DG_LR_padj <- 0
+for (i in rownames(DG.response.LR.DEGs)){
+  if (DG.response.LR.DEGs[i,2]>0){
+    DG.response.LR.DEGs[i,6] <- log10(DG.response.LR.DEGs[i,5])*-1
+  }
+  else{
+    DG.response.LR.DEGs[i,6] <- log10(DG.response.LR.DEGs[i,5])*1
+  }
+}
+
+DG.response.negbinom.DEGs$DG_negbinom_padj <- 0
+for (i in rownames(DG.response.negbinom.DEGs)){
+  if (DG.response.negbinom.DEGs[i,2]>0){
+    DG.response.negbinom.DEGs[i,6] <- log10(DG.response.negbinom.DEGs[i,5])*-1
+  }
+  else{
+    DG.response.negbinom.DEGs[i,6] <- log10(DG.response.negbinom.DEGs[i,5])*1
+  }
+}
+
+
+
+DG.response.poisson.DEGs$DG_poisson_padj <- 0
+#These two lines are made to prevent writing -inf in the output dataframe which can cause an issue with clustering needed in heatmap later
+#so, what I made here is to change the 0 value to whatever the lowest value that can be written in R
+DG.response.poisson.DEGs[DG.response.poisson.DEGs$p_val == 0, "p_val"] = .Machine$double.xmin
+DG.response.poisson.DEGs[DG.response.poisson.DEGs$p_val_adj == 0, "p_val_adj"] = .Machine$double.xmin
+for (i in rownames(DG.response.poisson.DEGs)){
+  if (DG.response.poisson.DEGs[i,2]>0){
+    DG.response.poisson.DEGs[i,6] <- log10(DG.response.poisson.DEGs[i,5])*-1
+  }
+  else{
+    DG.response.poisson.DEGs[i,6] <- log10(DG.response.poisson.DEGs[i,5])*1
+  }
+}
+
+
+DG.response.t.DEGs$DG_t_padj <- 0
+for (i in rownames(DG.response.t.DEGs)){
+  if (DG.response.t.DEGs[i,2]>0){
+    DG.response.t.DEGs[i,6] <- log10(DG.response.t.DEGs[i,5])*-1
+  }
+  else{
+    DG.response.t.DEGs[i,6] <- log10(DG.response.t.DEGs[i,5])*1
+  }
+}
+
+
+DG.response.wilcox.DEGs$DG_wilcox_padj <- 0
+for (i in rownames(DG.response.wilcox.DEGs)){
+  if (DG.response.wilcox.DEGs[i,2]>0){
+    DG.response.wilcox.DEGs[i,6] <- log10(DG.response.wilcox.DEGs[i,5])*-1
+  }
+  else{
+    DG.response.wilcox.DEGs[i,6] <- log10(DG.response.wilcox.DEGs[i,5])*1
+  }
+}
+
+
+############################adding same column to Micro DEGs
+
+
+Micro.response.bimod.DEGs$Micro_bimod_padj <- 0
+
+for (i in row.names(Micro.response.bimod.DEGs)){
+  if (Micro.response.bimod.DEGs[i,2]>0){
+    Micro.response.bimod.DEGs[i,6] = log10(Micro.response.bimod.DEGs[i,5])*-1
+  }
+  else{
+    Micro.response.bimod.DEGs[i,6] = log10(Micro.response.bimod.DEGs[i,5])*1
+  }
+}
+
+Micro.response.LR.DEGs$Micro_LR_padj <- 0
+for (i in rownames(Micro.response.LR.DEGs)){
+  if (Micro.response.LR.DEGs[i,2]>0){
+    Micro.response.LR.DEGs[i,6] <- log10(Micro.response.LR.DEGs[i,5])*-1
+  }
+  else{
+    Micro.response.LR.DEGs[i,6] <- log10(Micro.response.LR.DEGs[i,5])*1
+  }
+}
+
+Micro.response.negbinom.DEGs$Micro_negbinom_padj <- 0
+for (i in rownames(Micro.response.negbinom.DEGs)){
+  if (Micro.response.negbinom.DEGs[i,2]>0){
+    Micro.response.negbinom.DEGs[i,6] <- log10(Micro.response.negbinom.DEGs[i,5])*-1
+  }
+  else{
+    Micro.response.negbinom.DEGs[i,6] <- log10(Micro.response.negbinom.DEGs[i,5])*1
+  }
+}
+
+Micro.response.poisson.DEGs$Micro_poisson_padj <- 0
+for (i in rownames(Micro.response.poisson.DEGs)){
+  if (Micro.response.poisson.DEGs[i,2]>0){
+    Micro.response.poisson.DEGs[i,6] <- log10(Micro.response.poisson.DEGs[i,5])*-1
+  }
+  else{
+    Micro.response.poisson.DEGs[i,6] <- log10(Micro.response.poisson.DEGs[i,5])*1
+  }
+}
+
+
+Micro.response.t.DEGs$Micro_t_padj <- 0
+for (i in rownames(Micro.response.t.DEGs)){
+  if (Micro.response.t.DEGs[i,2]>0){
+    Micro.response.t.DEGs[i,6] <- log10(Micro.response.t.DEGs[i,5])*-1
+  }
+  else{
+    Micro.response.t.DEGs[i,6] <- log10(Micro.response.t.DEGs[i,5])*1
+  }
+}
+
+
+Micro.response.wilcox.DEGs$Micro_wilcox_padj <- 0
+for (i in rownames(Micro.response.wilcox.DEGs)){
+  if (Micro.response.wilcox.DEGs[i,2]>0){
+    Micro.response.wilcox.DEGs[i,6] <- log10(Micro.response.wilcox.DEGs[i,5])*-1
+  }
+  else{
+    Micro.response.wilcox.DEGs[i,6] <- log10(Micro.response.wilcox.DEGs[i,5])*1
+  }
+}
+
+
+
+
+```
+
+
+#getting intersection of DEGs
+```{r}
+
+CA1.intersection.DEGs <- Reduce(intersect, CA1.list.input)
+
+DG.intersection.DEGs <- Reduce(intersect, DG.list.input)
+
+Micro.intersection.DEGs <- Reduce(intersect, Micro.list.input)
+
+
+#I needed to create a dataframe of these intersection with edited padj values 
+
+
+#CA1
+CA1.intersection.DEGs.df <- cbind(CA1.response.bimod.DEGs[CA1.intersection.DEGs, 6],CA1.response.LR.DEGs[CA1.intersection.DEGs, 6],CA1.response.negbinom.DEGs[CA1.intersection.DEGs, 6],CA1.response.poisson.DEGs[CA1.intersection.DEGs, 6],CA1.response.t.DEGs[CA1.intersection.DEGs, 6],CA1.response.wilcox.DEGs[CA1.intersection.DEGs, 6])
+
+colnames(CA1.intersection.DEGs.df) <- c("log10_CA1_bimod_padj", "log10_CA1_LR_padj", "log10_CA1_negbinom_padj", "log10_CA1_poisson_padj", "log10_CA1_t_padj", "log10_CA1_wilcox_padj")
+rownames(CA1.intersection.DEGs.df) <- CA1.intersection.DEGs
+write.csv(CA1.intersection.DEGs.df, file = "CA1.intersection.DEGs.df.csv")
+CA1.intersection.DEGs.df <- as.data.frame(CA1.intersection.DEGs.df)
+
+
+#DG
+
+DG.intersection.DEGs.df <- cbind(DG.response.bimod.DEGs[DG.intersection.DEGs, 6],DG.response.LR.DEGs[DG.intersection.DEGs, 6],DG.response.negbinom.DEGs[DG.intersection.DEGs, 6],DG.response.poisson.DEGs[DG.intersection.DEGs, 6],DG.response.t.DEGs[DG.intersection.DEGs, 6],DG.response.wilcox.DEGs[DG.intersection.DEGs, 6])
+
+colnames(DG.intersection.DEGs.df) <- c("log10_DG_bimod_padj", "log10_DG_LR_padj", "log10_DG_negbinom_padj", "log10_DG_poisson_padj", "log10_DG_t_padj", "log10_DG_wilcox_padj")
+rownames(DG.intersection.DEGs.df) <- DG.intersection.DEGs
+write.csv(DG.intersection.DEGs.df, file = "DG.intersection.DEGs.df.csv")
+DG.intersection.DEGs.df <- as.data.frame(DG.intersection.DEGs.df)
+
+ 
+
+
+
+#Micro
+
+Micro.intersection.DEGs.df <- cbind(Micro.response.bimod.DEGs[Micro.intersection.DEGs, 6],Micro.response.LR.DEGs[Micro.intersection.DEGs, 6],Micro.response.negbinom.DEGs[Micro.intersection.DEGs, 6],Micro.response.poisson.DEGs[Micro.intersection.DEGs, 6],Micro.response.t.DEGs[Micro.intersection.DEGs, 6],Micro.response.wilcox.DEGs[Micro.intersection.DEGs, 6])
+
+colnames(Micro.intersection.DEGs.df) <- c("log10_Micro_bimod_padj", "log10_Micro_LR_padj", "log10_Micro_negbinom_padj", "log10_Micro_poisson_padj", "log10_Micro_t_padj", "log10_Micro_wilcox_padj")
+rownames(Micro.intersection.DEGs.df) <- Micro.intersection.DEGs
+write.csv(Micro.intersection.DEGs.df, file = "Micro.intersection.DEGs.df.csv")
+Micro.intersection.DEGs.df <- as.data.frame(Micro.intersection.DEGs.df)
+
+
+```
+
+
+#heatmap trials
+```{r}
+#Here, I was trying to find the best looking heatmap with best colors too 
+
+coul <- colorRampPalette(brewer.pal(8, "PiYG"))(25)
+coul2 <- brewer.pal(n = 6, name = 'Dark2')
+
+heatmap(as.matrix(CA1.intersection.DEGs.df), col= bluered(80), main = "CA1 DEGs", scale = "column")
+
+heatmap.2(as.matrix(CA1.intersection.DEGs.df), col = bluered(100), main = "CA1 DEGs", scale = "column", trace = "none")
+
+pheatmap(CA1.intersection.DEGs.df, cutree_rows = 1, color = coul, scale = "none", show_rownames = F)
+
+pheatmap(CA1.intersection.DEGs.df, cutree_rows = 1, color = bluered(80), scale = "column", show_rownames = F, cellwidth = 25)
+```
+
+#combining heatmaps for all cell types
+```{r}
+
+h1 <- as.ggplot(pheatmap(CA1.intersection.DEGs.df, cutree_rows = 1, color = bluered(80), scale = "column", show_rownames = F, cellwidth = 45, main = "CA1 DEGs", show_colnames = T, cluster_cols = F))
+h2 <- as.ggplot(pheatmap(DG.intersection.DEGs.df, cutree_rows = 1, color = bluered(80), scale = "column", show_rownames = F, cellwidth = 45, main = "DG DEGs", show_colnames = T, cluster_cols = F))
+h3 <- as.ggplot(pheatmap(Micro.intersection.DEGs.df, cutree_rows = 1, color = bluered(80), scale = "column", show_rownames = F, cellwidth = 45, main = "Micro DEGs", show_colnames = T, cluster_cols = F))
+
+
+
+
+tiff("combined_heatmaps.tiff", width=6000, height=2000, res=300)
+ggarrange(h1, h2, h3, ncol = 3, nrow = 1)
+dev.off()
+
+
+
+
+
+
+```
+
+
+
+
+
+#creating a dataframe for intersecting DEGs between CA1 and DG with their log10(padj) value 
+```{r}
+CA1.DG.DEGs <- data_frame()
+CA1.DG.DEGs.list <- sort(intersect(rownames(CA1.intersection.DEGs.df), rownames(DG.intersection.DEGs.df)))
+CA1.DG.DEGs <- cbind(CA1.intersection.DEGs.df[CA1.DG.DEGs.list,], DG.intersection.DEGs.df[CA1.DG.DEGs.list,])
+write.csv(CA1.DG.DEGs, file = "CA1_DG_intersecting_DEGs.csv")
+
+```
+
+
+#Vlnplot for genes of interest
+```{r}
+geness.of.interest <- c("Dnajc3", "Hsp90b1", "Hspa5", "Pdia3", "Pdia4", "Pdia6", "Xbp1")
+
+plots <- VlnPlot(seu.combined, features = geness.of.interest, split.by = "group", group.by = "celltype", idents = c("CA1-ProS_SOR", "CA1-ProS_HC", "DG_SOR", "DG_HC"), pt.size = 0.05, combine = FALSE)
+
+tiff("combined_vlnplots_7.tiff", width=5400, height=3000, res=300)
+wrap_plots(plots = plots, ncol = 4)
+dev.off()
+
+
+```
+
+
+#checking poisson interesection 
+```{r}
+
+CA1.DG.poisson.intersection <- intersect(rownames(CA1.response.poisson.DEGs), rownames(DG.response.poisson.DEGs))
+
+CA1.DG.poisson.intersection.df <- data_frame()
+CA1.DG.poisson.intersection.df <- cbind(CA1.response.poisson.DEGs[CA1.DG.poisson.intersection,], DG.response.poisson.DEGs[CA1.DG.poisson.intersection,])
+
+write.csv(CA1.DG.poisson.intersection.df, file = "CA1_DG_poisson_intersection.csv")
+
+```
+
+
+#DotPlot
+```{r}
+
+markers.to.plot <- c("Dnajc3", "Hsp90b1", "Hspa5", "Pdia3", "Pdia4", "Pdia6", "Xbp1")
+
+tiff(filename="DE_7_genes_CA1.tiff", width=3000, height=2000, res=300)
+DotPlot(seu.combined, features = markers.to.plot, cols = c("blue", "red"), dot.scale = 8, idents = c("CA1-ProS_SOR", "CA1-ProS_HC")) +
+    RotatedAxis()
+dev.off()
+
+tiff(filename="DE_7_genes_DG.tiff", width=3000, height=2000, res=300)
+DotPlot(seu.combined, features = markers.to.plot, cols = c("blue", "red"), dot.scale = 8, idents = c("DG_SOR", "DG_HC")) +
+    RotatedAxis()
+dev.off()
+
+```
+
+
+
+
+
+
+
+##############################################
+#Deconv 
+
+
+
+
+#installations
+```{r}
+
+# install devtools if necessary
+install.packages('devtools')
+
+# install the MuSiC package
+devtools::install_github('xuranw/MuSiC')
+
+# load
+library(MuSiC)
+
+
+```
+
+
+
+
+#build an expressionset object
+```{r}
+
+gene.annotation <- read.csv("/wdata/msmuhammad/projects/rotation/rotation-1-scrna-seq/data/decon/gene_annotation.csv", row.names = 1)
+bulk.matrix <- read.csv("/wdata/msmuhammad/projects/rotation/rotation-1-scrna-seq/data/decon/counts.csv", row.names = 1)
+
+# check if rownames are identical.
+identical(rownames(bulk.matrix), rownames(gene.annotation))
+
+
+# we found a list of duplicated genes, and agreed to get rid of these ensembl ids
+duplicated.genes <- gene.annotation$ensembl[which(duplicated(gene.annotation$symbol))]
+log_duplicated <- rownames(bulk.matrix) %in% duplicated.genes
+bulk.matrix.filtered <- bulk.matrix[!log_duplicated,]
+
+# make sure to match your rownames before renaming them 
+identical(rownames(bulk.matrix.filtered), rownames(gene.annotation))
+
+# reassign rownames to symbols.
+rownames(bulk.matrix.filtered) <- gene.annotation$symbol[match(rownames(bulk.matrix.filtered), gene.annotation$ensembl)]
+
+
+
+# rownames(bulk.matrix) = gene.annotation[match(rownames(bulk.matrix), gene.annotation$ensembl_gene_id), "symbol"]
+sampleIDs <- colnames(bulk.matrix)
+
+pheno.matrix <- data_frame(sampleID = sampleIDs)
+row.names(pheno.matrix) <- sampleIDs
+metadata <- data.frame(labelDescription= c("Sample ID"), row.names=c("sampleID"))
+bulk.eset = ExpressionSet(assayData = data.matrix(bulk.matrix.filtered), phenoData =  new("AnnotatedDataFrame", data = pheno.matrix, varMetadata = metadata))
+
+### create single cell expression set.
+# sc.eset <- ExpressionSet(assayData = data.matrix(seu.combined@assays$RNA@counts), phenoData = new("AnnotatedDataFrame", varMetadata = seu.combined@meta.data))
+sc.eset <- ExpressionSet(assayData = data.matrix(seu.combined@assays$RNA@counts))
+
+### manually add pData.
+# sampleID & SubjectName = external_donor_name_label
+# cellType = subclass_predicted_id
+pData(sc.eset) = seu.combined@meta.data
+
+
+```
+
+
+
+
+
+```{r}
+
+# Estimate cell type proportions
+Est.prop = music_prop(bulk.eset = bulk.eset, sc.eset = sc.eset, clusters = 'subclass_predicted_id',
+                               samples = 'external_donor_name_label', verbose = F)
+names(Est.prop)
+
+```
+
+
+# this is for MuSiC only
+```{r}
+# Jitter plot of estimated cell type proportions
+jitter.fig.music = Jitter_Est(list(data.matrix(Est.prop$Est.prop.weighted),
+                             data.matrix(Est.prop$Est.prop.allgene)),
+                        method.name = c('MuSiC'), title = 'Jitter plot of Est Proportions')
+
+# A more sophisticated jitter plot is provided as below. We seperated the T2D subjects and normal 
+#subjects by their HbA1c levels.
+
+m.prop.music = rbind(melt(Est.prop$Est.prop.weighted))
+
+colnames(m.prop.music) = c('Sub', 'CellType', 'Prop')
+
+# to get all cell types u have
+celltypes.music <- unique(m.prop.music$CellType)
+
+m.prop.music$CellType = factor(m.prop.music$CellType, levels = levels(celltypes.music))
+
+# I changed the numbers below
+# 74 for number of samples u have in bulk and 32 is number of cell types
+m.prop.music$Method = factor(rep(c('MuSiC'), each = 74*32), levels = c('MuSiC'))
+
+
+m.prop.music %>% ggplot(aes(x = Sub, y = CellType, fill = Prop )) + geom_tile()
+
+
+```
+
+# this is for MuSiC and NNLS
+```{r}
+# Jitter plot of estimated cell type proportions
+jitter.fig = Jitter_Est(list(data.matrix(Est.prop$Est.prop.weighted),
+                             data.matrix(Est.prop$Est.prop.allgene)),
+                        method.name = c('MuSiC', 'NNLS'), title = 'Jitter plot of Est Proportions')
+
+# A more sophisticated jitter plot is provided as below. We seperated the T2D subjects and normal 
+#subjects by their HbA1c levels.
+
+m.prop = rbind(melt(Est.prop$Est.prop.weighted), 
+                        melt(Est.prop$Est.prop.allgene))
+
+colnames(m.prop) = c('Sub', 'CellType', 'Prop')
+
+# to get all cell types u have
+celltypes <- unique(m.prop$CellType)
+
+m.prop$CellType = factor(m.prop$CellType, levels = levels(celltypes))
+
+# I changed the numbers below
+# 74 for number of samples u have in bulk and 32 is number of cell types
+m.prop$Method = factor(rep(c('MuSiC', 'NNLS'), each = 74*32), levels = c('MuSiC', 'NNLS'))
+
+
+m.prop %>% ggplot(aes(x = Sub, y = CellType, fill = Prop )) + geom_tile() + facet_wrap(~Method)
+
+
+```
+
+
+```{r}
+saveRDS(bulk.eset, file = "bulk.eset.rds")
+saveRDS(sc.eset, file = "sc.eset.rds")
+saveRDS(Est.prop, file = "Est.prop.rds")
+saveRDS(m.prop, file = "m.prop.rds")
+saveRDS(m.prop.music, file = "m.prop.music.rds")
+```
+
+
+
+# Estimate cell proportions with a liost of markers as an input parameter 
+```{r}
+# That's a list of marker genes used to get predicted cell types. 
+vf = seu.combined@assays$integrated@var.features
+
+# get neuronal subclass labels.
+load("/wdata/ebahl/mlab/thesis/cell_activity/neuronal-activity-score/data/Allen_Cell_Types_Database/DERIVED/subclass_cluster_data.rda")
+select.ct = as.character(subclass_data$subclass_label)
+
+# Estimate cell type proportions
+Est.prop.markers = music_prop(bulk.eset = bulk.eset, sc.eset = sc.eset, clusters = 'subclass_predicted_id',
+                               samples = 'external_donor_name_label', verbose = F, markers = vf, select.ct = select.ct)
+
+names(Est.prop.markers)
+
+```
+
+# this is for MuSiC and NNLS
+```{r}
+# Jitter plot of estimated cell type proportions
+jitter.fig.markers = Jitter_Est(list(data.matrix(Est.prop.markers$Est.prop.weighted),
+                             data.matrix(Est.prop.markers$Est.prop.allgene)),
+                        method.name = c('MuSiC', 'NNLS'), title = 'Jitter plot of Est Proportions')
+
+# A more sophisticated jitter plot is provided as below. We seperated the T2D subjects and normal 
+#subjects by their HbA1c levels.
+
+m.prop.markers = rbind(melt(Est.prop.markers$Est.prop.weighted), 
+                        melt(Est.prop.markers$Est.prop.allgene))
+
+colnames(m.prop.markers) = c('Sub', 'CellType', 'Prop')
+
+# to get all cell types u have
+celltypes.markers <- unique(m.prop.markers$CellType)
+
+m.prop.markers$CellType = factor(m.prop.markers$CellType, levels = levels(celltypes.markers))
+
+# I changed the numbers below
+# 74 for number of samples u have in bulk and 32 is number of cell types
+m.prop.markers$Method = factor(rep(c('MuSiC', 'NNLS'), each = (ncol(bulk.eset))*(length(celltypes.markers))), levels = c('MuSiC', 'NNLS'))
+
+
+m.prop.markers %>% ggplot(aes(x = Sub, y = CellType, fill = Prop )) + geom_tile() + facet_wrap(~Method)
+
+
+```
+
+
+
+
+
+
+
+```{r}
+tab = table(seu.combined@meta.data$subclass_predicted_id)
+hist(tab, breaks = 50)
+sort(tab)
+names(tab[tab >= 50])
+select.ct = names(tab[tab >= 50])
+```
+
+
+
+
+# create a new eset for sc data with ncount > 2000
+```{r}
+#filter the sc data and take cells that have ncount > 2000
+
+seu.combined.filtered@meta.data <- seu.combined@meta.data[which(seu.combined@meta.data$nCount_RNA>2000),]
+
+
+### create single cell expression set.
+# sc.eset <- ExpressionSet(assayData = data.matrix(seu.combined@assays$RNA@counts), phenoData = new("AnnotatedDataFrame", varMetadata = seu.combined@meta.data))
+sc.eset.filtered <- ExpressionSet(assayData = data.matrix(seu.combined.filtered@assays$RNA@counts))
+
+### manually add pData.
+# sampleID & SubjectName = external_donor_name_label
+# cellType = subclass_predicted_id
+pData(sc.eset.filtered) = seu.combined.filtered@meta.data
+
+
+```
+
+
+# Estimate cell proportions with a list of markers as an input parameter using filtered seu 
+```{r}
+# That's a list of marker genes used to get predicted cell types. 
+vf.filtered = seu.combined.filtered@assays$integrated@var.features
+
+
+# Estimate cell type proportions
+Est.prop.markers.filtered = music_prop(bulk.eset = bulk.eset, sc.eset = sc.eset.filtered, clusters = 'subclass_predicted_id',
+                               samples = 'external_donor_name_label', verbose = F, markers = vf.filtered, select.ct = select.ct)
+
+names(Est.prop.markers.filtered)
+
+```
+
+# this is for MuSiC and NNLS
+```{r}
+# Jitter plot of estimated cell type proportions
+jitter.fig.markers = Jitter_Est(list(data.matrix(Est.prop.markers$Est.prop.weighted),
+                             data.matrix(Est.prop.markers$Est.prop.allgene)),
+                        method.name = c('MuSiC', 'NNLS'), title = 'Jitter plot of Est Proportions')
+
+# A more sophisticated jitter plot is provided as below. We seperated the T2D subjects and normal 
+#subjects by their HbA1c levels.
+
+m.prop.markers.filtered = rbind(melt(Est.prop.markers.filtered$Est.prop.weighted), 
+                        melt(Est.prop.markers.filtered$Est.prop.allgene))
+
+colnames(m.prop.markers.filtered) = c('Sub', 'CellType', 'Prop')
+
+# to get all cell types u have
+celltypes.markers.filtered <- unique(m.prop.markers.filtered$CellType)
+
+m.prop.markers.filtered$CellType = factor(m.prop.markers.filtered$CellType, levels = levels(celltypes.markers.filtered))
+
+# I changed the numbers below
+# 74 for number of samples u have in bulk and 32 is number of cell types
+m.prop.markers.filtered$Method = factor(rep(c('MuSiC', 'NNLS'), each = (ncol(bulk.eset))*(length(celltypes.markers.filtered))), levels = c('MuSiC', 'NNLS'))
+
+
+m.prop.markers.filtered %>% ggplot(aes(x = Sub, y = CellType, fill = Prop )) + geom_tile() + facet_wrap(~Method)
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+################################################################################### 
+# In the following chunks, the signature matrix was used as sc.eset
+
+
+# loading files of allen
+```{r}
+allen_tmm = read.csv("/sdata/AIBS/celltypes/data/mmusculus/mouse_whole_cortex_and_hippocampus_10x/medians.csv", row.names = 1)
+allen_tmm = t(allen_tmm)
+
+allen = read.csv("/wdata/ebahl/mlab/thesis/cell_activity/neuronal-activity-score/data/Allen_Cell_Types_Database/STANDARD/samples.csv", row.names = 1)
+
+
+
+subclass_table = sort(table(allen$subclass_label))
+
+allen = allen %>% select(class_label, subclass_label, cluster_label)
+rownames(allen) = NULL
+allen = unique(allen)
+allen = allen[allen$class_label != "",]
+allen_tmm = allen_tmm[,colnames(allen_tmm) %in% allen$cluster_label]
+
+```
+
+#build the sc.eset
+
+```{r}
+### create single cell expression set.
+
+
+
+colnames(allen_tmm) <- gsub(" ", "_", colnames(allen_tmm))
+colnames(allen_tmm) <- gsub("-", "_", colnames(allen_tmm))
+                            
+sc.eset.allen <- ExpressionSet(assayData = data.matrix(allen_tmm))
+
+# check if the rownmaes of the sc.eset are in bulk.eset
+table(rownames(allen_tmm) %in% rownames(bulk.eset@assayData[["exprs"]]))
+
+
+
+sc.eset.allen$celltype <- 
+
+# rownames(bulk.matrix) = gene.annotation[match(rownames(bulk.matrix), gene.annotation$ensembl_gene_id), "symbol"]
+sampleIDs.allen <- colnames(allen_tmm)
+
+pheno.matrix.allen <- data_frame(celltype = sampleIDs.allen, sampleIDs = sampleIDs.allen)
+row.names(pheno.matrix.allen) <- sampleIDs.allen
+metadata <- data.frame(labelDescription= c("cell type", "sample ID"), row.names=c("celltype", "sampleID"))
+
+
+pData(sc.eset.allen) <- pheno.matrix.allen
+sc.eset.allen$celltype
+
+```
+
+
+#dictionary-like list
+```{r}
+list.items <- unique(allen$subclass_label)
+list.items
+
+#I wanted to replace spaces with undersore
+list.items <- gsub(" ", "_", list.items)
+list.items
+list.items <- gsub("-", "_", list.items)
+list.items
+
+
+# I needed to replace spaces in the allen df too
+allen$subclass_label <- gsub(" ", "_", allen$subclass_label)
+allen$subclass_label <- gsub("-", "_", allen$subclass_label)
+allen$subclass_label
+
+cells.list <- list()
+
+for (i in list.items){
+  #print(i)
+  cells.list[[noquote(i)]] <- list(c(allen[which(allen[,"subclass_label"] == i),"cluster_label"]))
+  print(cells.list[[noquote(i)]])
+}
+
+
+
+
+
+
+
+```
+
+
+```{r}
+# Produce the first step information
+Mousesub.basis = music_basis(sc.eset.allen, clusters = 'celltype', samples = 'sampleIDs')
+
+S = music_S(sc.eset.allen, non.zero = FALSE, clusters = "celltype", samples = "sampleIDs", select.ct=NULL)
+
+Mousesub.basic = music.basic(Y[,1], X, iter.max = 1000, nu = 0.0001, eps = 0.01)
+
+# Plot the dendrogram of design matrix and cross-subject mean of realtive abundance
+par(mfrow = c(1, 2))
+d <- dist(t(log(Mousesub.basis$Disgn.mtx + 1e-6)), method = "euclidean")
+# Hierarchical clustering using Complete Linkage
+hc1 <- hclust(d, method = "complete" )
+# Plot the obtained dendrogram
+plot(hc1, cex = 0.6, hang = -1, main = 'Cluster log(Design Matrix)')
+d <- dist(t(log(Mousesub.basis$M.theta + 1e-8)), method = "euclidean")
+# Hierarchical clustering using Complete Linkage
+# hc2 <- hclust(d, method = "complete" )
+hc2 <- hclust(d, method = "complete")
+# Plot the obtained dendrogram
+plot(hc2, cex = 0.6, hang = -1, main = 'Cluster log(Mean of RA)')
+```
+
+
+
+
+
+
+#estimation of cell proportion nwith pre-grouping of cell types
+```{r}
+cells.list <- cells.list[-c(19, 45, 46)]
+cl.type = as.character(sc.eset.allen$celltype)
+
+for(cl in 1:length(cells.list)){
+  cl.type[cl.type %in% cells.list[[cl]]] = names(cells.list)[cl]
+}
+pData(sc.eset.allen)$clusterType = factor(cl.type, levels = c(names(cells.list)))
+
+# 13 selected cell types
+s.mouse = unlist(cells.list)
+s.mouse
+#       C1        C2       C31       C32       C33       C34       C35       C36       C41       C42 
+# "Neutro"    "Podo"    "Endo"   "CD-PC"     "LOH"   "CD-IC"     "DCT"      "PT"   "Macro"     "Fib" 
+#      C43       C44       C45 
+#"B lymph"      "NK" "T lymph" 
+
+
+
+
+
+
+
+```
+
+
+
+
+#################################################################### 
+# Deconvolution using granulator
+
+#installation
+```{r}
+BiocManager::install("granulator")
+```
+
+#build an expressionset object
+```{r}
+gene.annotation <- read.csv("/wdata/msmuhammad/projects/rotation/rotation-1-scrna-seq/data/decon/gene_annotation.csv", row.names = 1)
+bulk.matrix <- read.csv("/wdata/msmuhammad/projects/rotation/rotation-1-scrna-seq/data/decon/counts.csv", row.names = 1)
+
+# check if rownames are identical.
+identical(rownames(bulk.matrix), rownames(gene.annotation))
+
+# we found a list of duplicated genes, and agreed to get rid of these ensembl ids
+duplicated.genes <- gene.annotation$ensembl[which(duplicated(gene.annotation$symbol))]
+log_duplicated <- rownames(bulk.matrix) %in% duplicated.genes
+bulk.matrix.filtered <- bulk.matrix[!log_duplicated,]
+
+# make sure to match your rownames before renaming them 
+identical(rownames(bulk.matrix.filtered), rownames(gene.annotation))
+
+# reassign rownames to symbols.
+rownames(bulk.matrix.filtered) <- gene.annotation$symbol[match(rownames(bulk.matrix.filtered), gene.annotation$ensembl)]
+
+sampleIDs <- colnames(bulk.matrix)
+
+pheno.matrix <- data_frame(sampleID = sampleIDs)
+row.names(pheno.matrix) <- sampleIDs
+metadata <- data.frame(labelDescription= c("Sample ID"), row.names=c("sampleID"))
+bulk.eset = ExpressionSet(assayData = data.matrix(bulk.matrix.filtered), phenoData =  new("AnnotatedDataFrame", data = pheno.matrix, varMetadata = metadata))
+
+```
+
+
+
+
+# Deconv steps using granulator
+```{r}
+# The Y matrix is the bulk matrix
+# The X matrix is the signature matrix
+X = allen_tmm
+Y <- bulk.eset@assayData$exprs
+
+table(rownames(X) %in% rownames(Y))
+genes.int <- intersect(rownames(X), rownames(Y))
+Y = Y[genes.int,]
+X = X[genes.int,]
+
+# I changed the colnames from cluster labels to the corresponding subclass label 
+for (i in 1:length(colnames(X))) {
+  colnames(X)[i] <- allen$subclass_label[which(allen[,"cluster_label"] == colnames(X)[i])]
+}
+
+# I changed the colnames from cluster labels to the corresponding class label 
+for (i in 1:length(colnames(X))) {
+  colnames(X)[i] <- allen$class_label[which(allen[,"cluster_label"] == colnames(X)[i])]
+}
+
+# I aggregated the columns that have the same name by averaging the values 
+Z <- avearrays(X)
+
+
+
+
+
+
+# Here, we removed genes that has low variance and counts in both datasets: the bulk and signature matrix 
+gene.var = apply(Z, 1, var)
+gene.mean = apply(Z, 1, mean)
+tiff("genemean_genevar_sigmatrix.tiff", height = 3000, width = 5000, res = 200)
+plot(gene.mean, gene.var)
+dev.off()
+
+
+# 
+fit <- loess(gene.var ~ gene.mean)
+pred <- predict(fit)
+res = fit$residuals
+o = order(fit$x)
+res = fit$residuals
+tmp = data.frame(mean = gene.mean, var = gene.var, residual = fit$residuals)
+
+tiff("regression_fitting.tiff", height = 3000, width = 5000, res = 200)
+tmp %>% ggplot(aes(x = mean, y = var, color = factor((residual)>0) )) + geom_point(size = 1, alpha = 0.5)
+dev.off
+
+
+tiff("regression_fitting_line.tiff", height = 3000, width = 5000, res = 200)
+plot(fit)
+lines(fit$x[o], pred[o], col = "red")
+dev.off()
+
+
+Z2 = Z[gene.var>10,]
+Y2 = Y[rownames(Z2),]
+
+
+# deconvolute input data using all available methods by default
+decon <- deconvolute(m = Y2, sigMatrix = Z2, methods = c("dtangle", "nnls", "ols", "qprog"))
+saveRDS(decon, "decon_varM10_subclass.rds")
+
+# plot cell type proportions for svr model on ABIS_S0 reference profile
+tiff("deconvolution_avg_86s_varM10_subclasses_prop.tiff", height = 1000, width = 2000)
+plot_proportions(deconvoluted = decon, method = 'nnls', signature = 'sig1')
+dev.off()
+
+# plot cell type proportions
+tiff("deconvolution_avg_86s_varM10_subclasses_cells.tiff", height = 3000, width = 7000, res = 200)
+plot_deconvolute(deconvoluted = decon, scale = TRUE, labels = T)
+dev.off()
+
+```
+
+
+#benchmarking
+```{r}
+# benchmark methods by correlating estimated to measured cell type proportions
+# the ground_truth is the actual proportions measured by the fluoroscent microscope 
+bench <- benchmark(deconvoluted = decon, ground_truth = )
+
+# print metrics
+head(bench$rank)
+
+# plot regression for svr model on ABIS_S0 reference profile
+plot_regress(benchmarked = bench, method = 'svr', signature = 'sig1')
+
+# plot pearson correlation between predictions and true proportions
+plot_benchmark(benchmarked = bench, metric = 'pcc')
+
+```
+
+#correrlation Analysis
+```{r}
+# correlation analysis
+correl <- correlate(deconvoluted = decon)
+
+# correlation heatmap
+tiff("deconvolution_correlation_subclasses.tiff", height = 1000, width = 1000)
+plot_correlate(correlated = correl, method="heatmap", legend=TRUE)
+dev.off()
+
+```
+
+#correlation analysis by cor function
+```{r}
+# JC 1:12, JP 13:41, JW 42:56, MG 57:74, PG 75:86
+
+PG.samples.proportions <- decon$proportions$nnls_sig1[75:86,]
+correlation_matrix <- cor(JC.samples.proportions)
+is.na(correlation_matrix)
+correlation_matrix <- replace(correlation_matrix, is.na(correlation_matrix), 0)
+
+library(corrplot)
+tiff("deconvolution_correlation_subclasses_JC.tiff", height = 1200, width = 1200)
+corrplot(correlation_matrix, type = "upper", order = "hclust", 
+         tl.col = "black", tl.srt = 45, tl.cex = 1, col = colorRampPalette(rev(brewer.pal(11, "RdYlBu")))(101), cl.cex = 1)
+  title(main = "Deconvolution Correlation Analysis for JC data")
+dev.off()
+```
+
+#correlation plot using ggcorrplot
+```{r}
+JC.samples.proportions <- decon$proportions$nnls_sig1[1:12,]
+correlation_matrix <- cor(JC.samples.proportions)
+is.na(correlation_matrix)
+correlation_matrix <- replace(correlation_matrix, is.na(correlation_matrix), 0)
+
+library(ggcorrplot)
+tiff("deconvolution_correlation_subclasses_JC_V2.tiff", height = 800, width = 800)
+ggcorrplot(corr = correlation_matrix, method = "circle", hc.order = T, type = "upper", 
+         #colors = colorRampPalette(rev(brewer.pal(11, "RdYlBu")))(101), 
+         title = "Subclasses Correlation in JC data", show.diag = T, tl.cex = 12)
+dev.off()
+```
+
+
+
+
+
+
